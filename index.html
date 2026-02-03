@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>3D Particle Madness</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        #canvas-container { width: 100vw; height: 100vh; cursor: none; }
+        .ui { 
+            position: absolute; top: 30px; left: 30px; color: #0ff; 
+            font-family: 'Courier New', Courier, monospace; pointer-events: none; 
+            text-shadow: 0 0 10px #0ff;
+        }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <div class="ui">
+        <h1>NEON CHAOS V1</h1>
+        <p>> PINCH: MORPH SHAPE</p>
+        <p>> OPEN HAND: BIG BANG</p>
+    </div>
+    <video id="input_video" style="display:none;"></video>
+    <div id="canvas-container"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.0/build/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const container = document.getElementById('canvas-container');
+        
+        // --- SCENE SETUP ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+        camera.position.z = 12;
+
+        // --- PARTICLE CORE ---
+        const PARTICLE_COUNT = 15000; // Tripled the density
+        const geo = new THREE.BufferGeometry();
+        const posArray = new Float32Array(PARTICLE_COUNT * 3);
+        const targetArray = new Float32Array(PARTICLE_COUNT * 3);
+        const velocityArray = new Float32Array(PARTICLE_COUNT * 3);
+
+        for(let i=0; i < PARTICLE_COUNT * 3; i++) {
+            posArray[i] = (Math.random() - 0.5) * 50;
+            targetArray[i] = posArray[i];
+            velocityArray[i] = 0;
+        }
+
+        geo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        const mat = new THREE.PointsMaterial({
+            size: 0.04,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            color: 0x00ffff
+        });
+        const points = new THREE.Points(geo, mat);
+        scene.add(points);
+
+        // --- CRAZY SHAPE GENERATORS ---
+        const setShape = {
+            heart: () => {
+                for (let i = 0; i < PARTICLE_COUNT; i++) {
+                    const i3 = i * 3;
+                    const t = Math.random() * Math.PI * 2;
+                    targetArray[i3] = 16 * Math.pow(Math.sin(t), 3) * 0.3;
+                    targetArray[i3+1] = (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)) * 0.3;
+                    targetArray[i3+2] = (Math.random() - 0.5) * 2;
+                }
+            },
+            saturn: () => {
+                for (let i = 0; i < PARTICLE_COUNT; i++) {
+                    const i3 = i * 3;
+                    if (i < PARTICLE_COUNT * 0.5) { // Sphere
+                        const phi = Math.acos(-1 + (2 * i) / (PARTICLE_COUNT * 0.5));
+                        const theta = Math.sqrt(PARTICLE_COUNT * 0.5 * Math.PI) * phi;
+                        targetArray[i3] = Math.cos(theta) * Math.sin(phi) * 3;
+                        targetArray[i3+1] = Math.sin(theta) * Math.sin(phi) * 3;
+                        targetArray[i3+2] = Math.cos(phi) * 3;
+                    } else { // Rings
+                        const angle = Math.random() * Math.PI * 2;
+                        const radius = 5 + Math.random() * 2;
+                        targetArray[i3] = Math.cos(angle) * radius;
+                        targetArray[i3+1] = (Math.random() - 0.5) * 0.3;
+                        targetArray[i3+2] = Math.sin(angle) * radius;
+                    }
+                }
+            },
+            bang: () => {
+                for (let i = 0; i < PARTICLE_COUNT * 3; i++) {
+                    targetArray[i] = (Math.random() - 0.5) * 60;
+                }
+            }
+        };
+
+        // --- GESTURE STATE ---
+        let isPinching = false;
+        let currentShape = 0;
+        const shapes = ['heart', 'saturn'];
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const thumb = landmarks[4];
+                const index = landmarks[8];
+                
+                // Track finger movement
+                const tx = (index.x - 0.5) * -25;
+                const ty = (index.y - 0.5) * -20;
+                points.position.lerp(new THREE.Vector3(tx, ty, 0), 0.1);
+
+                // Calculate pinch distance
+                const dist = Math.hypot(index.x - thumb.x, index.y - thumb.y);
+
+                if (dist < 0.05 && !isPinching) { // PINCH
+                    isPinching = true;
+                    setShape[shapes[currentShape % shapes.length]]();
+                    currentShape++;
+                    mat.color.setHSL(Math.random(), 1, 0.5); // Strobing color
+                } else if (dist > 0.2 && isPinching) { // OPEN
+                    isPinching = false;
+                    setShape.bang();
+                    mat.color.setHex(0xffffff); // Flash white
+                }
+            }
+        });
+
+        const cam = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        cam.start();
+
+        // --- ANIMATION LOOP ---
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const positions = geo.attributes.position.array;
+            const time = Date.now() * 0.001;
+
+            for(let i=0; i < PARTICLE_COUNT * 3; i++) {
+                // The "Crazy" Lerp: Fast movement with a bit of noise
+                const noise = Math.sin(time + i) * 0.01;
+                positions[i] += (targetArray[i] - positions[i]) * 0.08 + noise;
+            }
+            
+            geo.attributes.position.needsUpdate = true;
+            points.rotation.y += 0.01;
+            points.rotation.z += 0.005;
+
+            // Reactive Background shift
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
